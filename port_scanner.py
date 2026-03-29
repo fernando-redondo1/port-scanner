@@ -8,17 +8,17 @@ from typing import Optional, Dict, Any, Union
 import pyfiglet
 from scapy.all import IP, TCP, sr1, send, conf
 
-# --- IMPORTACIÓN MODULAR ---
+# --- MODULAR IMPORTS ---
 try:
     from .art import DOGS, QUOTES
 except ImportError:
-    # Esto permite ejecutar el script directamente o como paquete
+    # This allows running the script directly or as a package
     from art import DOGS, QUOTES
 
 conf.verb = 0
 
 def print_bloodhound_banner():
-    """Imprime el banner usando los recursos de art.py"""
+    """Prints the banner using the resources from art.py"""
     fonts = ["slant", "small"]
     title = pyfiglet.figlet_format("INFOSCANN", font=random.choice(fonts))
     print(title)
@@ -33,7 +33,7 @@ VULN_DB = {
 }
 
 def check_vulnerabilities(banner: str) -> Optional[str]:
-    # Revisa si la versión del banner está en nuestra lista de vulnerabilidades críticas.
+    # Checks if the banner version is in our list of critical vulnerabilities.
     b_low = banner.lower()
     for version, msg in VULN_DB.items():
         if version in b_low:
@@ -41,11 +41,11 @@ def check_vulnerabilities(banner: str) -> Optional[str]:
     return None
 
 def scan_target(ip: Union[str, ipaddress.IPv4Address, ipaddress.IPv6Address], port: int, timeout: float) -> Optional[Dict[str, Any]]:
-    # Escanea un puerto, captura su banner y usa el TTL para estimar el sistema operativo.
+    # Scans a port, grabs its banner and uses TTL to estimate the OS.
     target = str(ip)
     is_open = False
     
-    # 1. Escaneo TCP estándar 
+    # 1. Standard TCP Connect Scan
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.settimeout(timeout)
         if s.connect_ex((target, port)) == 0:
@@ -54,7 +54,7 @@ def scan_target(ip: Union[str, ipaddress.IPv4Address, ipaddress.IPv6Address], po
     if not is_open:
         return None  
         
-    # 2. Capturamos el banner del servicio
+    # 2. Grab the service banner
     banner = "No banner"
     try:
         with socket.create_connection((target, port), timeout=timeout) as s:
@@ -64,9 +64,9 @@ def scan_target(ip: Union[str, ipaddress.IPv4Address, ipaddress.IPv6Address], po
             if banner_bytes:
                 banner = banner_bytes.decode('utf-8', errors='ignore').strip().replace('\r\n', ' ')
     except (socket.timeout, ConnectionRefusedError, ConnectionResetError, OSError):
-        pass  # Ignoramos si el puerto nos rechaza al enviar texto extraño
+        pass  # We ignore if the port rejects us when sending strange payloads
 
-    # 3. OS Fingerprinting pasivo con Scapy (admin)
+    # 3. Passive OS Fingerprinting with Scapy (requires admin/root)
     os_type = "Unknown"
     try:
         pkt = IP(dst=target)/TCP(dport=port, flags="S")
@@ -87,7 +87,7 @@ def scan_target(ip: Union[str, ipaddress.IPv4Address, ipaddress.IPv6Address], po
     return {"ip": target, "port": port, "os": os_type, "banner": banner, "vulnerability": vuln}
 
 def main() -> None:
-    # Punto de entrada principal: parseo de argumentos y ejecución concurrente de hilos
+    # Main entry point: argument parsing and concurrent thread execution
     print_bloodhound_banner()
     parser = argparse.ArgumentParser(description="INFOSCANN: The Network Bloodhound")
     parser.add_argument("-t", "--target", required=True)
@@ -98,7 +98,7 @@ def main() -> None:
     is_agg = args.mode == "aggressive"
     workers, timeout = (100, 0.5) if is_agg else (20, 1.5)
     
-    # Validación manual de puertos
+    # Manual port validation
     ports = []
     for p in args.ports.split(","):
         try:

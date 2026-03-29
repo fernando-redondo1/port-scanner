@@ -1,13 +1,13 @@
 # art.py
 DOGS = [
-    # El Olfateador
+    # The Sniffer
     """
       __      _
     o'')}____//  <-- Sniffing...
      `_/      )  
      (_(_/-(_/   
     """,
-    # El Guardián
+    # The Guardian
     """
         |\\_/|                  
         | @ @   Woof! 
@@ -16,7 +16,7 @@ DOGS = [
         |               || | /
         |________________||_|/
     """,
-    # El Rastreador
+    # The Tracker
     """
        / \\__
       (    @\\___

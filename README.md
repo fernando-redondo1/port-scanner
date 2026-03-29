@@ -1,71 +1,70 @@
-# InfoScann - Escáner de Puertos en Python
+# InfoScann - The Network Bloodhound
 
 ![Python](https://img.shields.io/badge/python-3.8%2B-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
-**InfoScann** es un escáner de puertos de red rápido, modular y concurrente desarrollado íntegramente en Python.
+**InfoScann** is a fast, modular, and concurrent network port scanner built entirely in Python.
 
-El proyecto está diseñado para realizar tareas de reconocimiento de red eficaces (como banner grabbing y estimación del sistema operativo), aprovechando un modelo de paralelismo asíncrono y manipulación de paquetes directos de bajo nivel.
+I designed this project to perform effective network reconnaissance tasks—like banner grabbing and OS fingerprinting—by leveraging an asynchronous parallelism model and low-level raw packet manipulation.
 
-## Arquitectura y Lógica del Código
+## How It Works Under the Hood
 
-La lógica del script base (`port_scanner.py`) se divide en tres fases principales que ocurren secuencialmente por cada puerto analizado:
+The core logic of the scanner (`port_scanner.py`) broken down into three main phases that happen sequentially for each analyzed port:
 
-1. **Paralelismo y Conexión Base**: Para asegurar que la herramienta sea rápida al escanear múltiples direcciones IP y puertos a la vez, he implementado `concurrent.futures.ThreadPoolExecutor`. En lugar de iterar puerto por puerto en un bucle bloqueante, el programa despacha y gestiona un "pool" de hilos que realizan pruebas en paralelo. La detección en sí ocurre utilizando abstracciones de bajo nivel con la librería estándar `socket` (método `connect_ex`).
-2. **Banner Grabbing Activo**: Cuando el escáner detecta que el puerto de un objetivo ha aceptado la conexión en el paso previo, inmediatamente intenta capturar la respuesta del servicio (*banner*). Para servicios web en ciertos puertos (como 80, 443, 8080), el código inyecta manualmente una petición HTTP simple (`HEAD / HTTP/1.1`) para forzar una respuesta identificable por parte del servidor remoto.
-3. **OS Fingerprinting (Estimación de SO)**: El componente más avanzado de la aplicación utiliza la librería `scapy` para crear paquetes puros y analizar de vuelta el "Time-To-Live" (TTL) en la respuesta TCP del objetivo. A través de este sencillo cálculo en las capas inferiores del modelo OSI, la herramienta infiere de manera educada contra qué Sistema Operativo estamos enfrentándonos (ej. TTL~64 apunta a distribuciones Linux, TTL~128 apunta a Windows).
+1. **Parallelism and Core Connection**: To ensure the tool is fast when scanning multiple IP addresses and ports at once, I implemented Python's `concurrent.futures.ThreadPoolExecutor`. Instead of iterating port by port in a blocking loop, the program dispatches and manages a pool of threads that run tests in parallel. The actual detection happens using low-level abstractions with the standard `socket` library (`connect_ex` method).
+2. **Active Banner Grabbing**: When the scanner detects that a target's port has accepted the connection in the previous step, it immediately tries to grab the service's response (*banner*). For web services on typical ports (like 80, 443, 8080), the code manually injects a simple HTTP request (`HEAD / HTTP/1.1`) to force an identifiable response from the remote server.
+3. **Passive OS Fingerprinting**: The most advanced component of the application uses the `scapy` library to craft raw packets and analyze the back-and-forth "Time-To-Live" (TTL) in the target's TCP response. Through this simple calculation on the lower layers of the OSI model, the tool makes an educated guess about the Operating System we are up against (e.g., TTL~64 usually points to Linux distributions, TTL~128 points to Windows).
 
-## Librerías Utilizadas
+## Tech Stack & Libraries
 
-- `socket`: Empleada para instanciar las conexiones TCP/IP de más bajo nivel.
-- `concurrent.futures`: Para la orquestación, asincronía y el control del volumen de hilos de ejecución.
-- `scapy`: Utilizada para el análisis de paquetes de red "en crudo" (raw packets).
-- `argparse`: Integra parámetros de entrada al ejecutar el script en consola para mantener un estándar POSIX.
-- `ipaddress`: Parsea e identifica un simple número IP de manera robusta y permite el desglose de subredes completas (CIDR blocks).
-- `pyfiglet`: Como añadido estético temporal para invocar una interfaz inicial agradable por terminal.
+- `socket`: Used to instantiate the lowest-level TCP/IP connections.
+- `concurrent.futures`: Handles the orchestration, concurrency, and volume control of execution threads.
+- `scapy`: Essential for crafting and analyzing raw network packets.
+- `argparse`: Integrates command-line parameters to maintain a POSIX standard experience.
+- `ipaddress`: Parses and robustly identifies single IPs and allows for the breakdown of entire subnets (CIDR blocks).
+- `pyfiglet`: Added as a temporary aesthetic touch to invoke a pleasant CLI interface on startup.
 
-## Requisitos e Instalación
+## Getting Started
 
-Para que todas las características de la herramienta funcionen al 100% se requiere la siguiente preparación del entorno:
+To get all the features of the tool working at 100%, your environment needs to be properly set up:
 
-**Requisitos Previos:**
-- **Python 3.8** o superior.
-- **Windows:** Es indispensable tener instalado **Npcap** y ejecutar la consola como **Administrador**.
-- **Linux / MacOS:** No requiere drivers extras, pero el script debe ejecutarse con privilegios de súper usuario.
+**Prerequisites:**
+- **Python 3.8** or higher.
+- **Windows:** It is absolutely necessary to have **Npcap** installed and to run your console as **Administrator** (required by Scapy).
+- **Linux / MacOS:** No extra drivers are needed, but the script must be executed with superuser privileges (`sudo`).
 
-**Instalación:**
-El proyecto está empaquetado usando `pyproject.toml`, lo que permite instalarlo como un comando nativo del sistema de forma limpia.
+**Installation:**
+The project is packaged using `pyproject.toml`, which allows you to cleanly install it as a native system command.
 
 ```bash
-# Estando dentro de la carpeta del código, instala la herramienta usando pip:
+# While inside the code directory, install the tool via pip:
 pip install .
 
-# Una vez instalada, puedes ejecutarla desde cualquier ruta:
+# Once installed, you can run it from anywhere on your system:
 infoscann -t 127.0.0.1 -p 80,443
 ```
 
-## Ejemplo de Ejecución
+## See It In Action
 
-![Ejemplo de uso](screenshot.png)
+![Usage Example](screenshot.png)
 
-### Modos de uso y parámetros:
-La herramienta permite adaptar la agresividad y el rango del escaneo según la necesidad:
+### Usage Modes & Examples:
+The tool allows you to adapt the aggressiveness and range of the scan based on your needs:
 
-* **Modo Sigiloso**
+* **Stealth Mode (Default)**
   `infoscann -t scanme.nmap.org`
 
-* **Modo Agresivo:**
+* **Aggressive Mode:**
   `infoscann -t scanme.nmap.org -m aggressive`
 
-* **Definir Puertos Específicos:**
+* **Target Specific Ports:**
   `infoscann -t 127.0.0.1 -p 21,22,80,443,8080`
 
-## Limitaciones y Roadmap
+## What's Next (Roadmap)
 
-Se han identificado las siguientes áreas principales de refactorización y mejora para entornos de producción:
+I've identified a few key areas for refactoring and improvement for production environments going forward:
 
-- **Estrategias Stealth (Discreción)**: La implementación actual depende explícitamente de concluir el *"Handshake 3-Way"* (TCP Connect Scan), lo que queda registrado fácilmente en los "logs" de cualquier firewall básico. La refactorización evidente recae en implementar un *TCP SYN Scan* enviando paquetes directos con `scapy` que no dejen un rastro tan evidente.
-- **Soporte de Criptografía (TLS/SSL)**: De momento, todas las conexiones que inician la lectura del *banner* asumen texto claro. Actualizar el código que intercepta el puerto 443 y aplicar un "wrapper" con la librería `ssl` de Python brindará información sobre certificados HTTPS de la mayoría de servidores web actuales.
-- **Escalabilidad del Escáner de Vulnerabilidades**: El control pasivo de vulnerabilidades críticas actualmente lee con un bloque constante en memoria. La iteración natural sería una integración asincrónica contra APIs estandarizadas como CVE o Vulners para proveer reportes sobre el ecosistema real.
-
+- **Stealth Strategies**: The current implementation explicitly relies on completing the *"3-Way Handshake"* (TCP Connect Scan), which easily gets logged by any basic firewall. The obvious refactoring move here is to implement a *TCP SYN Scan* by sending raw packets with `scapy` that don't leave such an obvious footprint.
+- **Cryptography Support (TLS/SSL)**: Right now, all connections initiating a banner grab assume plain text. Updating the logic to intercept port 443 and applying a wrapper with Python's `ssl` library will yield HTTPS certificate information from most modern web servers.
+- **Vulnerability Scanner Scalability**: The passive vulnerability check currently reads from a constant block in memory. The natural iteration would be an asynchronous integration with standardized APIs like standard CVE databases or Vulners to provide reports against the actual ecosystem.
 

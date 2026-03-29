@@ -12,7 +12,7 @@ dependencies = [
 ]
 
 [tool.setuptools]
-# Aquí le decimos explícitamente qué módulos debe empaquetar
+# Explicitly telling setuptools which python modules to package
 py-modules = ["port_scanner", "art"]
 
 [project.scripts]
