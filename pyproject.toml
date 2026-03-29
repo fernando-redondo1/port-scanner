@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "infoscann"
+version = "2.2.0"
+description = "The Network Bloodhound: Port scanner with OS fingerprinting and modular art"
+dependencies = [
+    "scapy",
+    "pyfiglet",
+]
+
+[tool.setuptools]
+# Aquí le decimos explícitamente qué módulos debe empaquetar
+py-modules = ["port_scanner", "art"]
+
+[project.scripts]
+infoscann = "port_scanner:main"

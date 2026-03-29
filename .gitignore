@@ -1,0 +1,13 @@
+# Entorno virtual y Python
+.venv/
+__pycache__/
+*.pyc
+build/
+infoscann.egg-info/
+
+# Reportes y resultados (Privacidad)
+*.json
+
+# Archivos de sistema
+.DS_Store
+Thumbs.db
