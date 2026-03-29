@@ -44,6 +44,14 @@ pip install .
 infoscann -t 127.0.0.1 -p 80,443
 ```
 
+**Using Docker (Recommended):**
+The project is automatically built and published to the GitHub Container Registry. You can run it directly without installing any local dependencies:
+
+```bash
+# Note: --privileged is required for Scapy to perform OS footprinting via raw sockets
+docker run --privileged ghcr.io/fernando-redondo1/port-scanner:main -t scanme.nmap.org -m stealth
+```
+
 ## See It In Action
 
 ![Usage Example](screenshot.png)
