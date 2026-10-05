@@ -8,7 +8,7 @@ from typing import Optional, Dict, Any, Union
 
 import pyfiglet
 from cryptography import x509
-from scapy.all import IP, TCP, sr1, send, conf
+from scapy.all import IP, IPv6, TCP, sr1, send, conf
 
 # --- MODULAR IMPORTS ---
 try:
@@ -70,10 +70,13 @@ def scan_target(ip: Union[str, ipaddress.IPv4Address, ipaddress.IPv6Address], po
     target = str(ip)
     banner = "No banner"
     tls_info = None
+    is_ipv6 = ipaddress.ip_address(target).version == 6
 
     # 1. Standard TCP Connect Scan. The same socket is kept open for the banner
     # grab, so each open port costs one TCP connection instead of two.
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+    # The address family must match the IP version or connect() fails.
+    family = socket.AF_INET6 if is_ipv6 else socket.AF_INET
+    with socket.socket(family, socket.SOCK_STREAM) as s:
         s.settimeout(timeout)
         if s.connect_ex((target, port)) != 0:
             return None
@@ -86,7 +89,8 @@ def scan_target(ip: Union[str, ipaddress.IPv4Address, ipaddress.IPv6Address], po
                 conn = TLS_CONTEXT.wrap_socket(s, server_hostname=target)
                 tls_info = get_tls_info(conn)
             if port in [80, 443, 8080, 8443]:
-                conn.sendall(f"HEAD / HTTP/1.1\r\nHost: {target}\r\n\r\n".encode())
+                host = f"[{target}]" if is_ipv6 else target  # RFC 3986: IPv6 literals go in brackets
+                conn.sendall(f"HEAD / HTTP/1.1\r\nHost: {host}\r\n\r\n".encode())
             banner_bytes = conn.recv(1024)
             if banner_bytes:
                 banner = banner_bytes.decode('utf-8', errors='ignore').strip().replace('\r\n', ' ')
@@ -98,19 +102,22 @@ def scan_target(ip: Union[str, ipaddress.IPv4Address, ipaddress.IPv6Address], po
     # 3. Passive OS Fingerprinting with Scapy (requires admin/root)
     os_type = "Unknown"
     try:
-        pkt = IP(dst=target)/TCP(dport=port, flags="S")
+        # IPv6 calls the TTL field "Hop Limit" (hlim), but it means the same
+        ip_layer = IPv6 if is_ipv6 else IP
+        pkt = ip_layer(dst=target)/TCP(dport=port, flags="S")
         res = sr1(pkt, timeout=timeout, verbose=0)
-        if res and res.haslayer(IP):
-            ttl = res.getlayer(IP).ttl
+        if res and res.haslayer(ip_layer):
+            ttl = res[IPv6].hlim if is_ipv6 else res[IP].ttl
             os_type = "Linux/Unix" if ttl <= 64 else "Windows" if ttl <= 128 else "Other"
-            send(IP(dst=target)/TCP(dport=port, flags="R"), verbose=0)
+            send(ip_layer(dst=target)/TCP(dport=port, flags="R"), verbose=0)
     except PermissionError:
         os_type = "Unknown (Require Admin/Root)"
     except Exception:
         os_type = "Unknown (Error/Loopback)"
         
     vuln = check_vulnerabilities(banner)
-    print(f"[+] {target}:{port} | {os_type} | {' '.join(banner.split())[:40]}...")
+    endpoint = f"[{target}]:{port}" if is_ipv6 else f"{target}:{port}"
+    print(f"[+] {endpoint} | {os_type} | {' '.join(banner.split())[:40]}...")
     if tls_info:
         print(f"    [TLS] Subject: {tls_info['subject']} | Issuer: {tls_info['issuer']} | Expires: {tls_info['expires']}")
     if vuln: print(f"    [!] ALERT: {vuln}")
@@ -149,7 +156,10 @@ def main() -> None:
             targets = list(net.hosts())
         else:
             try:
-                resolved_ip = socket.gethostbyname(args.target)
+                # getaddrinfo understands IPv6 literals and AAAA records;
+                # gethostbyname only returns IPv4 addresses.
+                addr_info = socket.getaddrinfo(args.target, None, proto=socket.IPPROTO_TCP)
+                resolved_ip = addr_info[0][4][0]
                 targets = [ipaddress.ip_address(resolved_ip)]
             except socket.gaierror:
                 print(f"[!] Target error: Could not resolve domain '{args.target}'")
