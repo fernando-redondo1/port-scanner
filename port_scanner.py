@@ -4,10 +4,12 @@ import concurrent.futures
 import errno
 import functools
 import ipaddress
+import json
 import random
 import socket
 import ssl
 import threading
+from datetime import datetime, timezone
 from typing import Optional, Dict, Any, Tuple, Union
 
 import pyfiglet
@@ -219,14 +221,32 @@ def parse_ports(spec: str) -> list:
 
 MAX_ROWS_PER_STATE = 10
 
-def print_summary(results: list) -> None:
-    # Threads finish in any order, so results are sorted by IP and port
-    # before printing. ip_address() sorts numerically (10.0.0.2 < 10.0.0.10),
-    # and the version goes first because IPv4 and IPv6 can't be compared.
-    def sort_key(r):
-        addr = ipaddress.ip_address(r["ip"])
-        return (addr.version, addr, r["port"])
+def sort_key(r: Dict[str, Any]) -> tuple:
+    # Threads finish in any order, so results are sorted by IP and port.
+    # ip_address() sorts numerically (10.0.0.2 < 10.0.0.10), and the version
+    # goes first because IPv4 and IPv6 addresses can't be compared.
+    addr = ipaddress.ip_address(r["ip"])
+    return (addr.version, addr, r["port"])
 
+def export_json(path: str, results: list, args: argparse.Namespace, started_at: datetime) -> None:
+    # Writes every scanned port (open, closed and filtered) with the scan
+    # metadata, so a SIEM can ingest the file. Timestamps are UTC ISO 8601.
+    report = {
+        "scanner": "infoscann",
+        "target": args.target,
+        "scan_type": args.scan_type,
+        "started_at": started_at.isoformat(),
+        "finished_at": datetime.now(timezone.utc).isoformat(),
+        "results": sorted(results, key=sort_key),
+    }
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(report, f, indent=2)
+        print(f"[*] Results exported to {path}")
+    except OSError as e:
+        print(f"[!] Could not write '{path}': {e}")
+
+def print_summary(results: list) -> None:
     # Like nmap's "Not shown" line, a non-open state with many ports is
     # collapsed into a counter so a 1-1024 scan doesn't print 1000 rows.
     counts = collections.Counter(r["state"] for r in results)
@@ -252,6 +272,8 @@ def main() -> None:
     parser.add_argument("-s", "--scan-type", choices=["connect", "syn"], default="connect",
                         help="connect: full TCP handshake (no privileges needed). "
                              "syn: half-open scan with raw packets (needs root)")
+    parser.add_argument("-o", "--output", metavar="FILE.json",
+                        help="export all results to a JSON file (e.g. for SIEM ingestion)")
     args = parser.parse_args()
 
     if args.scan_type == "syn" and not can_use_raw_sockets():
@@ -285,6 +307,7 @@ def main() -> None:
         return
 
     results = []
+    started_at = datetime.now(timezone.utc)
     with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
         futures = []
         for ip in targets:
@@ -297,6 +320,8 @@ def main() -> None:
     counts = collections.Counter(r["state"] for r in results)
     print(f"{'-'*60}\n[*] Hunt finished. {counts['open']} open, "
           f"{counts['closed']} closed, {counts['filtered']} filtered.")
+    if args.output:
+        export_json(args.output, results, args, started_at)
 
 if __name__ == "__main__":
     main()
