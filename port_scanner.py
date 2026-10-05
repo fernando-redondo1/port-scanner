@@ -124,6 +124,23 @@ def scan_target(ip: Union[str, ipaddress.IPv4Address, ipaddress.IPv6Address], po
 
     return {"ip": target, "port": port, "os": os_type, "banner": banner, "tls": tls_info, "vulnerability": vuln}
 
+def print_summary(results: list) -> None:
+    # Threads finish in any order, so results are sorted by IP and port
+    # before printing. ip_address() sorts numerically (10.0.0.2 < 10.0.0.10),
+    # and the version goes first because IPv4 and IPv6 can't be compared.
+    def sort_key(r):
+        addr = ipaddress.ip_address(r["ip"])
+        return (addr.version, addr, r["port"])
+
+    rows = sorted(results, key=sort_key)
+    if not rows:
+        return
+    ip_width = max(len("IP"), *(len(r["ip"]) for r in rows))
+    print(f"\n{'IP':<{ip_width}}  {'PORT':>5}  {'OS':<28}  BANNER")
+    for r in rows:
+        banner = ' '.join(r["banner"].split())[:40]
+        print(f"{r['ip']:<{ip_width}}  {r['port']:>5}  {r['os']:<28}  {banner}")
+
 def main() -> None:
     # Main entry point: argument parsing and concurrent thread execution
     print_bloodhound_banner()
@@ -179,6 +196,7 @@ def main() -> None:
             if r:
                 results.append(r)
 
+    print_summary(results)
     print(f"{'-'*60}\n[*] Hunt finished. Found {len(results)} open ports.")
 
 if __name__ == "__main__":
