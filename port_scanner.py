@@ -43,28 +43,24 @@ def check_vulnerabilities(banner: str) -> Optional[str]:
 def scan_target(ip: Union[str, ipaddress.IPv4Address, ipaddress.IPv6Address], port: int, timeout: float) -> Optional[Dict[str, Any]]:
     # Scans a port, grabs its banner and uses TTL to estimate the OS.
     target = str(ip)
-    is_open = False
-    
-    # 1. Standard TCP Connect Scan
+    banner = "No banner"
+
+    # 1. Standard TCP Connect Scan. The same socket is kept open for the banner
+    # grab, so each open port costs one TCP connection instead of two.
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.settimeout(timeout)
-        if s.connect_ex((target, port)) == 0:
-            is_open = True
-            
-    if not is_open:
-        return None  
-        
-    # 2. Grab the service banner
-    banner = "No banner"
-    try:
-        with socket.create_connection((target, port), timeout=timeout) as s:
-            if port in [80, 443, 8080]: 
+        if s.connect_ex((target, port)) != 0:
+            return None
+
+        # 2. Grab the service banner over the already established connection
+        try:
+            if port in [80, 443, 8080]:
                 s.sendall(f"HEAD / HTTP/1.1\r\nHost: {target}\r\n\r\n".encode())
             banner_bytes = s.recv(1024)
             if banner_bytes:
                 banner = banner_bytes.decode('utf-8', errors='ignore').strip().replace('\r\n', ' ')
-    except (socket.timeout, ConnectionRefusedError, ConnectionResetError, OSError):
-        pass  # We ignore if the port rejects us when sending strange payloads
+        except (socket.timeout, ConnectionResetError, OSError):
+            pass  # We ignore if the port rejects us when sending strange payloads
 
     # 3. Passive OS Fingerprinting with Scapy (requires admin/root)
     os_type = "Unknown"
