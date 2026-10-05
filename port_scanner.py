@@ -6,7 +6,7 @@ import ipaddress
 import random
 import socket
 import ssl
-from typing import Optional, Dict, Any, Union
+from typing import Optional, Dict, Any, Tuple, Union
 
 import pyfiglet
 from cryptography import x509
@@ -67,15 +67,53 @@ def get_tls_info(tls_sock: ssl.SSLSocket) -> Optional[Dict[str, str]]:
         "expires": cert.not_valid_after_utc.isoformat(),
     }
 
-def scan_target(ip: Union[str, ipaddress.IPv4Address, ipaddress.IPv6Address], port: int, timeout: float) -> Optional[Dict[str, Any]]:
-    # Scans a port, grabs its banner and uses TTL to estimate the OS.
-    target = str(ip)
+# TCP flag bits (RFC 793)
+TCP_SYN, TCP_RST, TCP_ACK = 0x02, 0x04, 0x10
+
+def guess_os(ttl: int) -> str:
+    # Each OS starts packets with a default TTL (64 Linux/Unix, 128 Windows,
+    # 255 network gear) and every router hop decrements it by one.
+    return "Linux/Unix" if ttl <= 64 else "Windows" if ttl <= 128 else "Other"
+
+def can_use_raw_sockets() -> bool:
+    # Raw packets need root (or CAP_NET_RAW on Linux). Trying to open a raw
+    # socket is more reliable than checking the UID, e.g. inside containers.
+    try:
+        socket.socket(socket.AF_INET, socket.SOCK_RAW, socket.IPPROTO_TCP).close()
+        return True
+    except OSError:
+        return False
+
+def syn_probe(target: str, port: int, timeout: float, is_ipv6: bool) -> Tuple[str, Optional[int]]:
+    # Half-open (SYN) scan with scapy: the handshake is never completed, so the
+    # service never sees a connection. Returns the port state and the reply TTL.
+    # IPv6 calls the TTL field "Hop Limit" (hlim), but it means the same.
+    ip_layer = IPv6 if is_ipv6 else IP
+    sport = random.randint(1024, 65535)
+    reply = sr1(ip_layer(dst=target)/TCP(sport=sport, dport=port, flags="S"), timeout=timeout, verbose=0)
+
+    # No reply at all, or an ICMP error instead of TCP: a firewall is in the way
+    if reply is None or not reply.haslayer(TCP):
+        return "filtered", None
+
+    ttl = reply[IPv6].hlim if is_ipv6 else reply[IP].ttl
+    flags = int(reply[TCP].flags)
+    if flags & (TCP_SYN | TCP_ACK) == (TCP_SYN | TCP_ACK):
+        # SYN-ACK: open. Abort with a RST instead of the final ACK. Its sequence
+        # number must be the one the target expects (the ACK it just sent).
+        send(ip_layer(dst=target)/TCP(sport=sport, dport=port, flags="R", seq=reply[TCP].ack), verbose=0)
+        return "open", ttl
+    if flags & TCP_RST:
+        return "closed", ttl
+    return "filtered", None
+
+def connect_probe(target: str, port: int, timeout: float, is_ipv6: bool) -> Tuple[str, Optional[str], Optional[Dict[str, str]]]:
+    # Full TCP Connect Scan. The same socket is kept open for the banner grab,
+    # so each open port costs one TCP connection instead of two.
+    # Returns the port state, the banner and the TLS certificate details.
     banner = "No banner"
     tls_info = None
-    is_ipv6 = ipaddress.ip_address(target).version == 6
 
-    # 1. Standard TCP Connect Scan. The same socket is kept open for the banner
-    # grab, so each open port costs one TCP connection instead of two.
     # The address family must match the IP version or connect() fails.
     family = socket.AF_INET6 if is_ipv6 else socket.AF_INET
     with socket.socket(family, socket.SOCK_STREAM) as s:
@@ -86,10 +124,9 @@ def scan_target(ip: Union[str, ipaddress.IPv4Address, ipaddress.IPv6Address], po
             # but nothing listens there (closed). A timeout or an ICMP
             # unreachable means something dropped the SYN (filtered).
             state = "closed" if err == errno.ECONNREFUSED else "filtered"
-            return {"ip": target, "port": port, "state": state, "os": None,
-                    "banner": None, "tls": None, "vulnerability": None}
+            return state, None, None
 
-        # 2. Grab the service banner over the already established connection
+        # Grab the service banner over the already established connection
         conn = s
         try:
             if port in TLS_PORTS:
@@ -107,30 +144,37 @@ def scan_target(ip: Union[str, ipaddress.IPv4Address, ipaddress.IPv6Address], po
         finally:
             conn.close()  # wrap_socket detaches s, so the TLS socket must be closed explicitly
 
-    # 3. Passive OS Fingerprinting with Scapy (requires admin/root)
-    os_type = "Unknown"
-    try:
-        # IPv6 calls the TTL field "Hop Limit" (hlim), but it means the same
-        ip_layer = IPv6 if is_ipv6 else IP
-        pkt = ip_layer(dst=target)/TCP(dport=port, flags="S")
-        res = sr1(pkt, timeout=timeout, verbose=0)
-        if res and res.haslayer(ip_layer):
-            ttl = res[IPv6].hlim if is_ipv6 else res[IP].ttl
-            os_type = "Linux/Unix" if ttl <= 64 else "Windows" if ttl <= 128 else "Other"
-            send(ip_layer(dst=target)/TCP(dport=port, flags="R"), verbose=0)
-    except PermissionError:
-        os_type = "Unknown (Require Admin/Root)"
-    except Exception:
-        os_type = "Unknown (Error/Loopback)"
-        
-    vuln = check_vulnerabilities(banner)
-    endpoint = f"[{target}]:{port}" if is_ipv6 else f"{target}:{port}"
-    print(f"[+] {endpoint} | {os_type} | {' '.join(banner.split())[:40]}...")
-    if tls_info:
-        print(f"    [TLS] Subject: {tls_info['subject']} | Issuer: {tls_info['issuer']} | Expires: {tls_info['expires']}")
-    if vuln: print(f"    [!] ALERT: {vuln}")
+    return "open", banner, tls_info
 
-    return {"ip": target, "port": port, "state": "open", "os": os_type, "banner": banner, "tls": tls_info, "vulnerability": vuln}
+def scan_target(ip: Union[str, ipaddress.IPv4Address, ipaddress.IPv6Address], port: int, timeout: float, scan_type: str = "connect") -> Dict[str, Any]:
+    # Scans a port with the chosen technique and returns its result record.
+    target = str(ip)
+    is_ipv6 = ipaddress.ip_address(target).version == 6
+    os_type = banner = tls_info = vuln = None
+
+    if scan_type == "syn":
+        # The OS guess reuses the TTL of the SYN-ACK, so no extra packet is
+        # needed. There is no banner because no connection is ever opened.
+        state, ttl = syn_probe(target, port, timeout, is_ipv6)
+        if state == "open":
+            os_type = guess_os(ttl)
+            banner = "No banner (SYN scan)"
+    else:
+        # The kernel hides the TTL of connect() replies, so the OS can only be
+        # estimated in SYN mode.
+        state, banner, tls_info = connect_probe(target, port, timeout, is_ipv6)
+        if state == "open":
+            os_type = "Unknown (needs -s syn)"
+
+    if state == "open":
+        vuln = check_vulnerabilities(banner)
+        endpoint = f"[{target}]:{port}" if is_ipv6 else f"{target}:{port}"
+        print(f"[+] {endpoint} | {os_type} | {' '.join(banner.split())[:40]}...")
+        if tls_info:
+            print(f"    [TLS] Subject: {tls_info['subject']} | Issuer: {tls_info['issuer']} | Expires: {tls_info['expires']}")
+        if vuln: print(f"    [!] ALERT: {vuln}")
+
+    return {"ip": target, "port": port, "state": state, "os": os_type, "banner": banner, "tls": tls_info, "vulnerability": vuln}
 
 MAX_ROWS_PER_STATE = 10
 
@@ -164,7 +208,14 @@ def main() -> None:
     parser.add_argument("-t", "--target", required=True)
     parser.add_argument("-p", "--ports", default="22,80,443")
     parser.add_argument("-m", "--mode", choices=["stealth", "aggressive"], default="stealth")
+    parser.add_argument("-s", "--scan-type", choices=["connect", "syn"], default="connect",
+                        help="connect: full TCP handshake (no privileges needed). "
+                             "syn: half-open scan with raw packets (needs root)")
     args = parser.parse_args()
+
+    if args.scan_type == "syn" and not can_use_raw_sockets():
+        print("[!] SYN scan needs root/Administrator privileges. Falling back to connect scan.")
+        args.scan_type = "connect"
 
     is_agg = args.mode == "aggressive"
     workers, timeout = (100, 0.5) if is_agg else (20, 1.5)
@@ -206,7 +257,7 @@ def main() -> None:
         futures = []
         for ip in targets:
             for p in ports:
-                futures.append(executor.submit(scan_target, ip, p, timeout)) 
+                futures.append(executor.submit(scan_target, ip, p, timeout, args.scan_type))
         for f in concurrent.futures.as_completed(futures):
             results.append(f.result())
 
