@@ -176,6 +176,28 @@ def scan_target(ip: Union[str, ipaddress.IPv4Address, ipaddress.IPv6Address], po
 
     return {"ip": target, "port": port, "state": state, "os": os_type, "banner": banner, "tls": tls_info, "vulnerability": vuln}
 
+def parse_ports(spec: str) -> list:
+    # Parses a port list such as "22,80,8000-8100" into a sorted list without
+    # duplicates. Invalid entries are reported and skipped.
+    ports = set()
+    for item in spec.split(","):
+        item = item.strip()
+        if not item:
+            continue  # tolerate "22,,80" or a trailing comma
+        try:
+            if "-" in item:
+                start, end = (int(x) for x in item.split("-", 1))
+            else:
+                start = end = int(item)
+        except ValueError:
+            print(f"[!] Ignoring invalid port entry '{item}'")
+            continue
+        if not 1 <= start <= end <= 65535:
+            print(f"[!] Ignoring out of range port entry '{item}' (valid: 1-65535, low-high)")
+            continue
+        ports.update(range(start, end + 1))
+    return sorted(ports)
+
 MAX_ROWS_PER_STATE = 10
 
 def print_summary(results: list) -> None:
@@ -220,16 +242,7 @@ def main() -> None:
     is_agg = args.mode == "aggressive"
     workers, timeout = (100, 0.5) if is_agg else (20, 1.5)
     
-    # Manual port validation
-    ports = []
-    for p in args.ports.split(","):
-        try:
-            port_num = int(p.strip())
-            if 1 <= port_num <= 65535:
-                ports.append(port_num)
-        except ValueError:
-            pass
-            
+    ports = parse_ports(args.ports)
     if not ports:
         print("[!] Target error: No valid ports specified.")
         return
