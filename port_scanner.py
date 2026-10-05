@@ -1,5 +1,7 @@
 import argparse
+import collections
 import concurrent.futures
+import errno
 import ipaddress
 import random
 import socket
@@ -78,8 +80,14 @@ def scan_target(ip: Union[str, ipaddress.IPv4Address, ipaddress.IPv6Address], po
     family = socket.AF_INET6 if is_ipv6 else socket.AF_INET
     with socket.socket(family, socket.SOCK_STREAM) as s:
         s.settimeout(timeout)
-        if s.connect_ex((target, port)) != 0:
-            return None
+        err = s.connect_ex((target, port))
+        if err != 0:
+            # ECONNREFUSED means the host answered with a RST: it is reachable
+            # but nothing listens there (closed). A timeout or an ICMP
+            # unreachable means something dropped the SYN (filtered).
+            state = "closed" if err == errno.ECONNREFUSED else "filtered"
+            return {"ip": target, "port": port, "state": state, "os": None,
+                    "banner": None, "tls": None, "vulnerability": None}
 
         # 2. Grab the service banner over the already established connection
         conn = s
@@ -122,7 +130,9 @@ def scan_target(ip: Union[str, ipaddress.IPv4Address, ipaddress.IPv6Address], po
         print(f"    [TLS] Subject: {tls_info['subject']} | Issuer: {tls_info['issuer']} | Expires: {tls_info['expires']}")
     if vuln: print(f"    [!] ALERT: {vuln}")
 
-    return {"ip": target, "port": port, "os": os_type, "banner": banner, "tls": tls_info, "vulnerability": vuln}
+    return {"ip": target, "port": port, "state": "open", "os": os_type, "banner": banner, "tls": tls_info, "vulnerability": vuln}
+
+MAX_ROWS_PER_STATE = 10
 
 def print_summary(results: list) -> None:
     # Threads finish in any order, so results are sorted by IP and port
@@ -132,14 +142,20 @@ def print_summary(results: list) -> None:
         addr = ipaddress.ip_address(r["ip"])
         return (addr.version, addr, r["port"])
 
-    rows = sorted(results, key=sort_key)
-    if not rows:
-        return
-    ip_width = max(len("IP"), *(len(r["ip"]) for r in rows))
-    print(f"\n{'IP':<{ip_width}}  {'PORT':>5}  {'OS':<28}  BANNER")
-    for r in rows:
-        banner = ' '.join(r["banner"].split())[:40]
-        print(f"{r['ip']:<{ip_width}}  {r['port']:>5}  {r['os']:<28}  {banner}")
+    # Like nmap's "Not shown" line, a non-open state with many ports is
+    # collapsed into a counter so a 1-1024 scan doesn't print 1000 rows.
+    counts = collections.Counter(r["state"] for r in results)
+    hidden = [s for s in ("closed", "filtered") if counts[s] > MAX_ROWS_PER_STATE]
+
+    rows = sorted((r for r in results if r["state"] not in hidden), key=sort_key)
+    if rows:
+        ip_width = max(len("IP"), *(len(r["ip"]) for r in rows))
+        print(f"\n{'IP':<{ip_width}}  {'PORT':>5}  {'STATE':<8}  {'OS':<28}  BANNER")
+        for r in rows:
+            banner = ' '.join((r["banner"] or "").split())[:40]
+            print(f"{r['ip']:<{ip_width}}  {r['port']:>5}  {r['state']:<8}  {r['os'] or '-':<28}  {banner}")
+    if hidden:
+        print("Not shown: " + ", ".join(f"{counts[s]} {s} ports" for s in hidden))
 
 def main() -> None:
     # Main entry point: argument parsing and concurrent thread execution
@@ -192,12 +208,12 @@ def main() -> None:
             for p in ports:
                 futures.append(executor.submit(scan_target, ip, p, timeout)) 
         for f in concurrent.futures.as_completed(futures):
-            r = f.result()
-            if r:
-                results.append(r)
+            results.append(f.result())
 
     print_summary(results)
-    print(f"{'-'*60}\n[*] Hunt finished. Found {len(results)} open ports.")
+    counts = collections.Counter(r["state"] for r in results)
+    print(f"{'-'*60}\n[*] Hunt finished. {counts['open']} open, "
+          f"{counts['closed']} closed, {counts['filtered']} filtered.")
 
 if __name__ == "__main__":
     main()
