@@ -3,9 +3,11 @@ import concurrent.futures
 import ipaddress
 import random
 import socket
+import ssl
 from typing import Optional, Dict, Any, Union
 
 import pyfiglet
+from cryptography import x509
 from scapy.all import IP, TCP, sr1, send, conf
 
 # --- MODULAR IMPORTS ---
@@ -40,10 +42,34 @@ def check_vulnerabilities(banner: str) -> Optional[str]:
             return msg
     return None
 
+# Ports where the service speaks TLS from the first byte
+TLS_PORTS = {443, 8443}
+
+# A scanner must talk to any server, including self-signed or expired ones,
+# so certificate and hostname verification are disabled on purpose.
+TLS_CONTEXT = ssl.create_default_context()
+TLS_CONTEXT.check_hostname = False
+TLS_CONTEXT.verify_mode = ssl.CERT_NONE
+
+def get_tls_info(tls_sock: ssl.SSLSocket) -> Optional[Dict[str, str]]:
+    # Extracts subject, issuer and expiry date from the server certificate.
+    # With CERT_NONE, getpeercert() returns an empty dict, so the raw DER
+    # certificate is requested and parsed with the cryptography library.
+    der = tls_sock.getpeercert(binary_form=True)
+    if not der:
+        return None
+    cert = x509.load_der_x509_certificate(der)
+    return {
+        "subject": cert.subject.rfc4514_string(),
+        "issuer": cert.issuer.rfc4514_string(),
+        "expires": cert.not_valid_after_utc.isoformat(),
+    }
+
 def scan_target(ip: Union[str, ipaddress.IPv4Address, ipaddress.IPv6Address], port: int, timeout: float) -> Optional[Dict[str, Any]]:
     # Scans a port, grabs its banner and uses TTL to estimate the OS.
     target = str(ip)
     banner = "No banner"
+    tls_info = None
 
     # 1. Standard TCP Connect Scan. The same socket is kept open for the banner
     # grab, so each open port costs one TCP connection instead of two.
@@ -53,14 +79,21 @@ def scan_target(ip: Union[str, ipaddress.IPv4Address, ipaddress.IPv6Address], po
             return None
 
         # 2. Grab the service banner over the already established connection
+        conn = s
         try:
-            if port in [80, 443, 8080]:
-                s.sendall(f"HEAD / HTTP/1.1\r\nHost: {target}\r\n\r\n".encode())
-            banner_bytes = s.recv(1024)
+            if port in TLS_PORTS:
+                # Upgrade the same TCP connection to TLS before sending HTTP
+                conn = TLS_CONTEXT.wrap_socket(s, server_hostname=target)
+                tls_info = get_tls_info(conn)
+            if port in [80, 443, 8080, 8443]:
+                conn.sendall(f"HEAD / HTTP/1.1\r\nHost: {target}\r\n\r\n".encode())
+            banner_bytes = conn.recv(1024)
             if banner_bytes:
                 banner = banner_bytes.decode('utf-8', errors='ignore').strip().replace('\r\n', ' ')
-        except (socket.timeout, ConnectionResetError, OSError):
+        except (socket.timeout, ConnectionResetError, ssl.SSLError, OSError):
             pass  # We ignore if the port rejects us when sending strange payloads
+        finally:
+            conn.close()  # wrap_socket detaches s, so the TLS socket must be closed explicitly
 
     # 3. Passive OS Fingerprinting with Scapy (requires admin/root)
     os_type = "Unknown"
@@ -78,9 +111,11 @@ def scan_target(ip: Union[str, ipaddress.IPv4Address, ipaddress.IPv6Address], po
         
     vuln = check_vulnerabilities(banner)
     print(f"[+] {target}:{port} | {os_type} | {' '.join(banner.split())[:40]}...")
+    if tls_info:
+        print(f"    [TLS] Subject: {tls_info['subject']} | Issuer: {tls_info['issuer']} | Expires: {tls_info['expires']}")
     if vuln: print(f"    [!] ALERT: {vuln}")
-    
-    return {"ip": target, "port": port, "os": os_type, "banner": banner, "vulnerability": vuln}
+
+    return {"ip": target, "port": port, "os": os_type, "banner": banner, "tls": tls_info, "vulnerability": vuln}
 
 def main() -> None:
     # Main entry point: argument parsing and concurrent thread execution

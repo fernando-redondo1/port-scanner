@@ -9,6 +9,7 @@ description = "The Network Bloodhound: Port scanner with OS fingerprinting and m
 dependencies = [
     "scapy",
     "pyfiglet",
+    "cryptography>=42",
 ]
 
 [tool.setuptools]
