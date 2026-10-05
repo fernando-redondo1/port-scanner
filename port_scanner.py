@@ -2,10 +2,12 @@ import argparse
 import collections
 import concurrent.futures
 import errno
+import functools
 import ipaddress
 import random
 import socket
 import ssl
+import threading
 from typing import Optional, Dict, Any, Tuple, Union
 
 import pyfiglet
@@ -66,6 +68,22 @@ def get_tls_info(tls_sock: ssl.SSLSocket) -> Optional[Dict[str, str]]:
         "issuer": cert.issuer.rfc4514_string(),
         "expires": cert.not_valid_after_utc.isoformat(),
     }
+
+SERVICES_LOCK = threading.Lock()
+
+@functools.lru_cache(maxsize=None)
+def get_service_name(port: int) -> str:
+    # Looks up the IANA service name registered for the port in the OS
+    # services database (/etc/services). This is the expected service, not
+    # proof of what actually runs there; the banner is the real evidence.
+    # The C getservbyport() returns a pointer to a shared static buffer, so
+    # concurrent calls from the thread pool can read each other's garbage.
+    # The lock serializes them and the cache avoids repeating the lookup.
+    with SERVICES_LOCK:
+        try:
+            return socket.getservbyport(port, "tcp")
+        except OSError:
+            return "unknown"
 
 # TCP flag bits (RFC 793)
 TCP_SYN, TCP_RST, TCP_ACK = 0x02, 0x04, 0x10
@@ -150,6 +168,7 @@ def scan_target(ip: Union[str, ipaddress.IPv4Address, ipaddress.IPv6Address], po
     # Scans a port with the chosen technique and returns its result record.
     target = str(ip)
     is_ipv6 = ipaddress.ip_address(target).version == 6
+    service = get_service_name(port)
     os_type = banner = tls_info = vuln = None
 
     if scan_type == "syn":
@@ -169,12 +188,12 @@ def scan_target(ip: Union[str, ipaddress.IPv4Address, ipaddress.IPv6Address], po
     if state == "open":
         vuln = check_vulnerabilities(banner)
         endpoint = f"[{target}]:{port}" if is_ipv6 else f"{target}:{port}"
-        print(f"[+] {endpoint} | {os_type} | {' '.join(banner.split())[:40]}...")
+        print(f"[+] {endpoint} ({service}) | {os_type} | {' '.join(banner.split())[:40]}...")
         if tls_info:
             print(f"    [TLS] Subject: {tls_info['subject']} | Issuer: {tls_info['issuer']} | Expires: {tls_info['expires']}")
         if vuln: print(f"    [!] ALERT: {vuln}")
 
-    return {"ip": target, "port": port, "state": state, "os": os_type, "banner": banner, "tls": tls_info, "vulnerability": vuln}
+    return {"ip": target, "port": port, "state": state, "service": service, "os": os_type, "banner": banner, "tls": tls_info, "vulnerability": vuln}
 
 def parse_ports(spec: str) -> list:
     # Parses a port list such as "22,80,8000-8100" into a sorted list without
@@ -216,10 +235,10 @@ def print_summary(results: list) -> None:
     rows = sorted((r for r in results if r["state"] not in hidden), key=sort_key)
     if rows:
         ip_width = max(len("IP"), *(len(r["ip"]) for r in rows))
-        print(f"\n{'IP':<{ip_width}}  {'PORT':>5}  {'STATE':<8}  {'OS':<28}  BANNER")
+        print(f"\n{'IP':<{ip_width}}  {'PORT':>5}  {'STATE':<8}  {'SERVICE':<12}  {'OS':<28}  BANNER")
         for r in rows:
             banner = ' '.join((r["banner"] or "").split())[:40]
-            print(f"{r['ip']:<{ip_width}}  {r['port']:>5}  {r['state']:<8}  {r['os'] or '-':<28}  {banner}")
+            print(f"{r['ip']:<{ip_width}}  {r['port']:>5}  {r['state']:<8}  {r['service']:<12}  {r['os'] or '-':<28}  {banner}")
     if hidden:
         print("Not shown: " + ", ".join(f"{counts[s]} {s} ports" for s in hidden))
 
