@@ -1,95 +1,89 @@
-# InfoScann 
+# InfoScann
+
 ![Python](https://img.shields.io/badge/python-3.8%2B-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
-**InfoScann** is a fast, modular, and concurrent network port scanner built entirely in Python.
+**InfoScann** es un escáner de puertos de red rápido, modular y concurrente, escrito en Python.
 
-I designed this project to perform effective network reconnaissance tasks—like banner grabbing and OS fingerprinting—by leveraging an asynchronous parallelism model and low-level raw packet manipulation.
+Es un proyecto de aprendizaje centrado en tareas de reconocimiento de red, como el *banner grabbing* y la identificación del sistema operativo, usando ejecución en paralelo y manipulación de paquetes a bajo nivel.
 
-## How It Works Under the Hood
+> **Nota sobre el desarrollo:** el código se ha desarrollado con ayuda de IA (Claude). Mi trabajo se ha centrado en el diseño de la herramienta, las pruebas y la validación de los resultados mediante análisis de tráfico con `tcpdump`, lo que me permitió detectar falsos positivos y entender qué huellas deja un escaneo desde el punto de vista del defensor.
 
-The core logic of the scanner (`port_scanner.py`) is broken down into these phases for each analyzed port:
+## Cómo funciona por dentro
 
-1. **Parallelism**: To ensure the tool is fast when scanning multiple IP addresses and ports at once, I implemented Python's `concurrent.futures.ThreadPoolExecutor`. Instead of iterating port by port in a blocking loop, the program dispatches and manages a pool of threads that run tests in parallel.
-2. **Port Detection** (two techniques, chosen with `-s`):
-   - **Connect scan** (default, no privileges needed): a full TCP handshake with the standard `socket` library (`connect_ex`). The socket family (`AF_INET` / `AF_INET6`) follows the IP version, so IPv6 targets work too.
-   - **SYN scan** (`-s syn`, needs root): a half-open scan with `scapy`. A lone SYN is sent and the reply is classified: SYN-ACK means open (and a RST is sent so the handshake never completes), RST means closed, and no reply means filtered. If the scanner lacks raw socket privileges, it warns and falls back to the connect scan.
-3. **Port States**: Every port is reported as **open**, **closed** (the host answered with a RST) or **filtered** (timeout or ICMP unreachable, usually a firewall dropping the packet).
-4. **Active Banner Grabbing** (connect scan): the banner is read over the same socket that detected the open port, so each open port costs a single TCP connection. On web ports (80, 443, 8080, 8443) the code sends a `HEAD / HTTP/1.1` request to force an identifiable response. On TLS ports (443, 8443) the connection is first wrapped with Python's `ssl` module (certificate verification disabled on purpose, since scanners must handle self-signed and expired certificates), and the certificate **subject, issuer and expiry date** are reported.
-5. **Passive OS Fingerprinting** (SYN scan): the tool reads the Time-To-Live (TTL, or Hop Limit on IPv6) of the SYN-ACK it already received and makes an educated guess about the Operating System (e.g., TTL~64 usually points to Linux distributions, TTL~128 points to Windows). No extra packet is needed.
-6. **Reporting**: results are printed live, then summarized in a table sorted by IP and port, including the registered service name (`socket.getservbyport`). Large groups of closed/filtered ports are collapsed into a "Not shown" counter, like nmap does. With `-o`, everything can be exported to JSON.
+La lógica principal (`port_scanner.py`) se divide en estas fases para cada puerto analizado:
 
-## Tech Stack & Libraries
+- **Paralelismo:** para que el escaneo sea rápido con muchas IPs y puertos, se usa `concurrent.futures.ThreadPoolExecutor`. En lugar de ir puerto a puerto en un bucle bloqueante, el programa reparte las pruebas entre un conjunto de hilos que se ejecutan en paralelo.
 
-- `socket`: Used to instantiate the lowest-level TCP/IP connections.
-- `concurrent.futures`: Handles the orchestration, concurrency, and volume control of execution threads.
-- `scapy`: Crafts and analyzes the raw packets of the SYN scan.
-- `ssl` + `cryptography`: TLS handshake on HTTPS ports and parsing of the server certificate.
-- `json`: Exports results in a format that SIEMs can ingest.
-- `argparse`: Integrates command-line parameters to maintain a POSIX standard experience.
-- `ipaddress`: Parses and robustly identifies single IPs and allows for the breakdown of entire subnets (CIDR blocks).
-- `pyfiglet`: Added as a temporary aesthetic touch to invoke a pleasant CLI interface on startup.
+- **Detección de puertos (dos técnicas, se elige con `-s`):**
+  - **Connect scan** (por defecto, no necesita privilegios): completa el *handshake* TCP con la librería estándar `socket` (`connect_ex`). La familia del socket (`AF_INET` / `AF_INET6`) se adapta a la versión de IP, así que también funciona con IPv6.
+  - **SYN scan** (`-s syn`, necesita root): escaneo *half-open* con `scapy`. Se envía solo un SYN y se clasifica la respuesta: SYN-ACK significa abierto (y se envía un RST para no completar la conexión), RST significa cerrado, y la ausencia de respuesta significa filtrado. Si no hay permisos para sockets raw, avisa y vuelve al connect scan.
 
-## Getting Started
+- **Estados de los puertos:** cada puerto se marca como **abierto**, **cerrado** (el equipo responde con RST) o **filtrado** (sin respuesta o ICMP unreachable, normalmente porque un firewall descarta el paquete).
 
-To get all the features of the tool working at 100%, your environment needs to be properly set up:
+- **Banner grabbing activo (connect scan):** el banner se lee por el mismo socket que detectó el puerto abierto, así que cada puerto abierto cuesta una sola conexión TCP. En puertos web (80, 443, 8080, 8443) se envía una petición `HEAD / HTTP/1.1` para forzar una respuesta identificable. En puertos TLS (443, 8443) la conexión se envuelve primero con el módulo `ssl` de Python (con la verificación de certificados desactivada a propósito, porque un escáner debe poder tratar certificados autofirmados o caducados) y se muestran el sujeto, el emisor y la fecha de caducidad del certificado.
 
-**Prerequisites:**
-- **Python 3.8** or higher.
-- The default connect scan needs **no special privileges**.
-- The SYN scan (`-s syn`) and OS fingerprinting need raw packets:
-  - **Windows:** **Npcap** installed and the console run as **Administrator** (required by Scapy).
-  - **Linux / MacOS:** superuser privileges (`sudo`), or the `CAP_NET_RAW` capability.
+- **Identificación pasiva del sistema operativo (SYN scan):** la herramienta lee el TTL (o *Hop Limit* en IPv6) del SYN-ACK recibido y estima el sistema operativo (por ejemplo, TTL 64 suele indicar Linux y TTL 128, Windows). No hace falta enviar ningún paquete extra.
 
-**Installation:**
-The project is packaged using `pyproject.toml`, which allows you to cleanly install it as a native system command.
+- **Informe:** los resultados se muestran en directo y al final se resumen en una tabla ordenada por IP y puerto, con el nombre del servicio registrado (`socket.getservbyport`). Los grupos grandes de puertos cerrados o filtrados se agrupan en un contador "No mostrados", como hace nmap. Con `-o` se puede exportar todo a JSON.
+
+## Tecnologías y librerías
+
+- **`socket`:** conexiones TCP/IP a bajo nivel.
+- **`concurrent.futures`:** gestión de la concurrencia y del número de hilos.
+- **`scapy`:** creación y análisis de los paquetes raw del SYN scan.
+- **`ssl` + `cryptography`:** *handshake* TLS en puertos HTTPS y lectura del certificado del servidor.
+- **`json`:** exportación de resultados en un formato que pueden ingerir los SIEM.
+- **`argparse`:** parámetros de línea de comandos con estilo POSIX.
+- **`ipaddress`:** interpretación de IPs sueltas y de subredes completas (bloques CIDR).
+- **`pyfiglet`:** un toque estético para el banner de inicio.
+
+## Primeros pasos
+
+### Requisitos
+
+- Python 3.8 o superior.
+- El connect scan por defecto no necesita privilegios especiales.
+- El SYN scan (`-s syn`) y la identificación del sistema operativo necesitan paquetes raw:
+  - **Windows:** Npcap instalado y la consola ejecutada como Administrador (lo exige Scapy).
+  - **Linux / macOS:** privilegios de superusuario (`sudo`) o la capacidad `CAP_NET_RAW`.
+
+### Instalación
+
+El proyecto está empaquetado con `pyproject.toml`, así que se puede instalar como un comando más del sistema:
 
 ```bash
-# While inside the code directory, install the tool via pip:
+# Desde el directorio del código:
 pip install .
 
-# Once installed, you can run it from anywhere on your system:
+# Una vez instalado, se puede ejecutar desde cualquier sitio:
 infoscann -t 127.0.0.1 -p 80,443
 ```
 
-**Using Docker (Recommended):**
-The project is automatically built and published to the GitHub Container Registry. You can run it directly without installing any local dependencies:
+### Con Docker (recomendado)
+
+La imagen se construye y publica automáticamente en GitHub Container Registry, así que se puede usar sin instalar dependencias:
 
 ```bash
-# Note: --privileged is required for the SYN scan and OS fingerprinting via raw sockets
+# --privileged es necesario para el SYN scan y la identificación del SO mediante sockets raw
 docker run --privileged ghcr.io/fernando-redondo1/port-scanner:main -t scanme.nmap.org -s syn
 ```
 
-## See It In Action
+## Ejemplo de uso
 
-![Usage Example](screenshot.png)
+![Ejemplo de uso](screenshot.png)
 
-### Usage Modes & Examples:
-The tool allows you to adapt the aggressiveness and range of the scan based on your needs:
+### Modos y ejemplos
 
-* **Stealth Mode (Default)**
-  `infoscann -t scanme.nmap.org`
+- **Modo sigiloso (por defecto):** `infoscann -t scanme.nmap.org`
+- **Modo agresivo:** `infoscann -t scanme.nmap.org -m aggressive`
+- **Puertos concretos:** `infoscann -t 127.0.0.1 -p 21,22,80,443,8080`
+- **Rangos de puertos (se pueden mezclar con puertos sueltos):** `infoscann -t 127.0.0.1 -p 1-1024` o `infoscann -t 127.0.0.1 -p 22,80,8000-8100`
+- **SYN scan con identificación del SO (necesita root):** `sudo infoscann -t 127.0.0.1 -s syn`
+- **Objetivo IPv6:** `infoscann -t ::1 -p 22,80,443`
+- **Exportar a JSON (por ejemplo, para un SIEM):** `infoscann -t 127.0.0.1 -p 1-1024 -o results.json`
 
-* **Aggressive Mode:**
-  `infoscann -t scanme.nmap.org -m aggressive`
-
-* **Target Specific Ports:**
-  `infoscann -t 127.0.0.1 -p 21,22,80,443,8080`
-
-* **Port Ranges (can be mixed with single ports):**
-  `infoscann -t 127.0.0.1 -p 1-1024`
-  `infoscann -t 127.0.0.1 -p 22,80,8000-8100`
-
-* **SYN Scan with OS Fingerprinting (needs root):**
-  `sudo infoscann -t 127.0.0.1 -s syn`
-
-* **IPv6 Target:**
-  `infoscann -t ::1 -p 22,80,443`
-
-* **Export to JSON (e.g. for SIEM ingestion):**
-  `infoscann -t 127.0.0.1 -p 1-1024 -o results.json`
-
-The JSON file contains the scan metadata (target, scan type, UTC start/end timestamps) and one record per port:
+El fichero JSON incluye los metadatos del escaneo (objetivo, tipo de escaneo y hora de inicio y fin en UTC) y un registro por puerto:
 
 ```json
 {
@@ -108,27 +102,30 @@ The JSON file contains the scan metadata (target, scan type, UTC start/end times
 }
 ```
 
-## What's New
+## Novedades
 
-- **One connection per open port**: the connect scan reuses the same socket for detection and banner grabbing, and no longer sends an extra packet for OS detection.
-- **TLS support**: HTTPS ports are wrapped with `ssl`, and the certificate subject, issuer and expiry date are reported.
-- **IPv6 support**: the socket family follows the IP version, and names are resolved with `getaddrinfo` (AAAA records included).
-- **Sorted summary table**: results are ordered by IP and port at the end of the scan.
-- **Closed vs. filtered ports**: RST replies and timeouts are now told apart instead of being silently ignored.
-- **SYN scan** (`-s syn`): half-open scan with `scapy`, reusing the SYN-ACK TTL for OS fingerprinting, with automatic fallback to the connect scan without privileges.
-- **Port ranges**: `1-1024` and mixed lists like `22,80,8000-8100`.
-- **Service names**: from the OS services database via `getservbyport` (thread-safe, since the underlying C call is not).
-- **JSON export** (`-o`): all results plus scan metadata.
+- **Una conexión por puerto abierto:** el connect scan reutiliza el mismo socket para la detección y el banner grabbing, y ya no envía un paquete extra para identificar el SO.
+- **Soporte TLS:** los puertos HTTPS se envuelven con `ssl` y se muestran el sujeto, el emisor y la caducidad del certificado.
+- **Soporte IPv6:** la familia del socket sigue la versión de IP y los nombres se resuelven con `getaddrinfo` (incluidos los registros AAAA).
+- **Tabla resumen ordenada:** los resultados se ordenan por IP y puerto al final del escaneo.
+- **Cerrados frente a filtrados:** ahora se distinguen las respuestas RST de los timeouts, en lugar de ignorarlas.
+- **SYN scan (`-s syn`):** escaneo *half-open* con scapy, que aprovecha el TTL del SYN-ACK para identificar el SO, con vuelta automática al connect scan si no hay privilegios.
+- **Rangos de puertos:** `1-1024` y listas mixtas como `22,80,8000-8100`.
+- **Nombres de servicio:** desde la base de datos de servicios del sistema mediante `getservbyport` (protegido para hilos, porque la llamada interna en C no lo es).
+- **Exportación a JSON (`-o`):** todos los resultados más los metadatos del escaneo.
 
-## What's Next (Roadmap)
+## Próximos pasos
 
-Done since the first version: ~~TCP SYN scan~~ and ~~TLS/SSL support~~.
+Hecho desde la primera versión: SYN scan y soporte TLS/SSL.
 
-I've identified a few key areas for refactoring and improvement for production environments going forward:
+Áreas de mejora identificadas:
 
-- **Vulnerability Scanner Scalability**: The passive vulnerability check currently reads from a constant block in memory. The natural iteration would be an asynchronous integration with standardized APIs like standard CVE databases or Vulners to provide reports against the actual ecosystem.
-- **Service Detection in SYN Mode**: The SYN scan never completes a handshake, so it gets no banners. An optional follow-up probe on open ports (like nmap's `-sV`) would bring back banners, TLS details and vulnerability checks.
-- **Large IPv6 Networks**: CIDR targets are expanded into a full host list, which is fine for IPv4 subnets but not for an IPv6 `/64`. Large ranges should be rejected or streamed instead.
-- **Streaming Output**: An NDJSON mode (one JSON event per line, written as each port finishes) would let SIEM agents tail the file during long scans.
-- **Automated Tests**: Unit tests for port parsing, state classification and the report format, run in CI before the Docker image is published.
+- **Escalabilidad del detector de vulnerabilidades:** la comprobación pasiva lee de una lista fija en memoria. El siguiente paso sería consultar de forma asíncrona bases de datos de CVE o Vulners para comparar con vulnerabilidades reales.
+- **Detección de servicios en modo SYN:** el SYN scan nunca completa el *handshake*, así que no obtiene banners. Una sonda opcional sobre los puertos abiertos (como `-sV` en nmap) recuperaría banners, datos TLS y comprobaciones de vulnerabilidades.
+- **Redes IPv6 grandes:** los rangos CIDR se expanden en una lista completa de equipos, lo que funciona en subredes IPv4 pero no en un /64 de IPv6. Los rangos grandes deberían rechazarse o procesarse por partes.
+- **Salida en streaming:** un modo NDJSON (un evento JSON por línea, escrito al terminar cada puerto) permitiría a los agentes del SIEM leer el fichero durante escaneos largos.
+- **Tests automáticos:** pruebas unitarias del análisis de puertos, la clasificación de estados y el formato del informe, ejecutadas en CI antes de publicar la imagen de Docker.
 
+## Licencia
+
+Distribuido bajo la licencia MIT. Consulta el fichero `LICENSE`.
